@@ -7,10 +7,12 @@ import os
 
 app = FastAPI()
 
-# Enable CORS for frontend apps like Lovable
+# ✅ Replace with your actual Lovable frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with frontend domain in production
+    allow_origins=[
+        "https://id-preview--7d569cb1-aa03-496b-818a-39a53e875588.lovable.app"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -21,18 +23,18 @@ async def transcribe(
     file: UploadFile,
     api_key: str = Form(...),
     language_code: str = Form("en"),
-    export_format: str = Form("xlsx")  # or "csv"
+    export_format: str = Form("xlsx")  # Default to Excel
 ):
     # Set AssemblyAI API key
     aai.settings.api_key = api_key
 
-    # Save uploaded file
+    # Save uploaded file to temp location
     file_ext = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
         tmp.write(await file.read())
         filepath = tmp.name
 
-    # Transcription config
+    # Configure transcription
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(
         speech_model=aai.SpeechModel.best,
         speaker_labels=True,
@@ -45,14 +47,14 @@ async def transcribe(
     # Transcribe
     transcript = transcriber.transcribe(filepath)
 
-    # Fallback if no utterances: plain text
+    # Fallback to plain text if no utterances
     if not transcript.utterances:
         txt_path = filepath.replace(file_ext, "_plain.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(transcript.text)
         return FileResponse(txt_path, filename="transcript.txt")
 
-    # === Export options ===
+    # === CSV Export ===
     if export_format == "csv":
         import csv
         csv_path = filepath.replace(file_ext, ".csv")
@@ -68,6 +70,7 @@ async def transcribe(
                 ])
         return FileResponse(csv_path, filename="transcript.csv")
 
+    # === Excel Export ===
     else:
         from openpyxl import Workbook
         wb = Workbook()
