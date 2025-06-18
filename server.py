@@ -2,15 +2,15 @@ from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import assemblyai as aai
-import tempfile, os
-from openpyxl import Workbook
+import tempfile
+import os
 
 app = FastAPI()
 
 # Enable CORS for frontend apps like Lovable
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Replace with Lovable domain in production
+    allow_origins=["*"],  # Replace with frontend domain in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,17 +20,19 @@ app.add_middleware(
 async def transcribe(
     file: UploadFile,
     api_key: str = Form(...),
-    language_code: str = Form("en")  # default to English
+    language_code: str = Form("en"),
+    export_format: str = Form("xlsx")  # or "csv"
 ):
     # Set AssemblyAI API key
     aai.settings.api_key = api_key
 
-    # Save uploaded audio/video file
-    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
+    # Save uploaded file
+    file_ext = os.path.splitext(file.filename)[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
         tmp.write(await file.read())
         filepath = tmp.name
 
-    # Configure transcription with dynamic language selection
+    # Transcription config
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(
         speech_model=aai.SpeechModel.best,
         speaker_labels=True,
@@ -40,32 +42,46 @@ async def transcribe(
         language_code=language_code
     ))
 
-    # Run transcription
+    # Transcribe
     transcript = transcriber.transcribe(filepath)
 
-    # If diarization failed, fallback to plain text
+    # Fallback if no utterances: plain text
     if not transcript.utterances:
-        txt_path = filepath.replace(os.path.splitext(filepath)[1], "_plain.txt")
+        txt_path = filepath.replace(file_ext, "_plain.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(transcript.text)
         return FileResponse(txt_path, filename="transcript.txt")
 
-    # Export transcript with speaker labels as Excel
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Transcript"
-    ws.append(["Speaker", "Start", "End", "Text"])
+    # === Export options ===
+    if export_format == "csv":
+        import csv
+        csv_path = filepath.replace(file_ext, ".csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Speaker", "Start", "End", "Text"])
+            for u in transcript.utterances:
+                writer.writerow([
+                    u.speaker,
+                    round(u.start / 1000, 2),
+                    round(u.end / 1000, 2),
+                    u.text
+                ])
+        return FileResponse(csv_path, filename="transcript.csv")
 
-    for u in transcript.utterances:
-        ws.append([
-            u.speaker,
-            round(u.start / 1000, 2),
-            round(u.end / 1000, 2),
-            u.text
-        ])
-
-    excel_path = filepath.replace(os.path.splitext(filepath)[1], ".xlsx")
-    wb.save(excel_path)
-
-    return FileResponse(excel_path, filename="transcript.xlsx")
+    else:
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Transcript"
+        ws.append(["Speaker", "Start", "End", "Text"])
+        for u in transcript.utterances:
+            ws.append([
+                u.speaker,
+                round(u.start / 1000, 2),
+                round(u.end / 1000, 2),
+                u.text
+            ])
+        xlsx_path = filepath.replace(file_ext, ".xlsx")
+        wb.save(xlsx_path)
+        return FileResponse(xlsx_path, filename="transcript.xlsx")
 
