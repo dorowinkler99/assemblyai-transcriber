@@ -10,10 +10,8 @@ app = FastAPI()
 # ✅ Replace with your actual Lovable frontend URL
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://id-preview--7d569cb1-aa03-496b-818a-39a53e875588.lovable.app"
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow any frontend for now
+    allow_credentials=False,  # MUST be False when using "*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
