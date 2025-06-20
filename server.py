@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
 import assemblyai as aai
 import tempfile
 import os
@@ -8,7 +8,7 @@ import csv
 
 app = FastAPI()
 
-# CORS for Lovable
+# CORS config
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,21 +17,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Job cache to keep track of file paths per job
-job_files = {}
-
 @app.post("/transcribe")
-async def start_transcription(
+async def transcribe(
     file: UploadFile,
     api_key: str = Form(...),
     language_code: str = Form("en")
 ):
     aai.settings.api_key = api_key
+
+    # Save uploaded file to disk
     suffix = os.path.splitext(file.filename)[1]
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
         filepath = tmp.name
 
+    # Transcribe synchronously
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(
         speech_model=aai.SpeechModel.best,
         speaker_labels=True,
@@ -41,36 +41,17 @@ async def start_transcription(
         language_code=language_code
     ))
 
-    job = transcriber.submit(filepath)
-    job_files[job.id] = filepath
-    return {"job_id": job.id, "status": "submitted"}
+    transcript = transcriber.transcribe(filepath)
 
-@app.get("/status/{job_id}")
-async def check_status(job_id: str):
-    poller = aai.Transcriber()
-    transcript = poller.poll(job_id)
+    # Fallback: plain text if no utterances
+    if not transcript.utterances:
+        txt_path = filepath.replace(suffix, "_plain.txt")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(transcript.text)
+        return FileResponse(txt_path, filename="transcript.txt")
 
-    if transcript.status == "completed":
-        return {"status": "completed"}
-    elif transcript.status == "failed":
-        return {"status": "failed", "error": transcript.error}
-    else:
-        return {"status": transcript.status}
-
-@app.get("/download/{job_id}")
-async def download_csv(job_id: str):
-    poller = aai.Transcriber()
-    transcript = poller.poll(job_id)
-
-    if transcript.status != "completed":
-        return JSONResponse(status_code=202, content={"message": "Transcript not ready yet."})
-
-    if job_id not in job_files:
-        return JSONResponse(status_code=404, content={"message": "Original file not found."})
-
-    base_path = job_files[job_id]
-    csv_path = base_path.replace(os.path.splitext(base_path)[1], ".csv")
-
+    # Export to CSV
+    csv_path = filepath.replace(suffix, ".csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Speaker", "Start", "End", "Text"])
