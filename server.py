@@ -1,85 +1,86 @@
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import JSONResponse, FileResponse
 import assemblyai as aai
 import tempfile
 import os
+import csv
 
 app = FastAPI()
 
-# ✅ CORS - allow local test and Lovable
+# CORS for Lovable
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Safe for now, change to specific domain in prod
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# Job cache to keep track of file paths per job
+job_files = {}
+
 @app.post("/transcribe")
-async def transcribe(
+async def start_transcription(
     file: UploadFile,
     api_key: str = Form(...),
-    language_code: str = Form("en"),
-    export_format: str = Form("xlsx")
+    language_code: str = Form("en")
 ):
-    # Set API key
     aai.settings.api_key = api_key
-
-    # Save uploaded file to temp
-    file_ext = os.path.splitext(file.filename)[1]
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
+    suffix = os.path.splitext(file.filename)[1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
         filepath = tmp.name
 
-    # Transcription config with diarization
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(
         speech_model=aai.SpeechModel.best,
         speaker_labels=True,
         punctuate=True,
         format_text=True,
         disfluencies=False,
-        language_code=language_code,
-        speaker_detection_mode="multi"  # ✅ Enables overlap detection
+        language_code=language_code
     ))
 
-    transcript = transcriber.transcribe(filepath)
+    job = transcriber.submit(filepath)
+    job_files[job.id] = filepath
+    return {"job_id": job.id, "status": "submitted"}
 
-    if not transcript.utterances:
-        txt_path = filepath.replace(file_ext, "_plain.txt")
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(transcript.text)
-        return FileResponse(txt_path, filename="transcript.txt")
+@app.get("/status/{job_id}")
+async def check_status(job_id: str):
+    poller = aai.Transcriber()
+    transcript = poller.poll(job_id)
 
-    if export_format == "csv":
-        import csv
-        csv_path = filepath.replace(file_ext, ".csv")
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Speaker", "Start", "End", "Text"])
-            for u in sorted(transcript.utterances, key=lambda x: x.start):
-                writer.writerow([
-                    u.speaker,
-                    round(u.start / 1000, 2),
-                    round(u.end / 1000, 2),
-                    u.text
-                ])
-        return FileResponse(csv_path, filename="transcript.csv")
-
+    if transcript.status == "completed":
+        return {"status": "completed"}
+    elif transcript.status == "failed":
+        return {"status": "failed", "error": transcript.error}
     else:
-        from openpyxl import Workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Transcript"
-        ws.append(["Speaker", "Start", "End", "Text"])
+        return {"status": transcript.status}
+
+@app.get("/download/{job_id}")
+async def download_csv(job_id: str):
+    poller = aai.Transcriber()
+    transcript = poller.poll(job_id)
+
+    if transcript.status != "completed":
+        return JSONResponse(status_code=202, content={"message": "Transcript not ready yet."})
+
+    if job_id not in job_files:
+        return JSONResponse(status_code=404, content={"message": "Original file not found."})
+
+    base_path = job_files[job_id]
+    csv_path = base_path.replace(os.path.splitext(base_path)[1], ".csv")
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Speaker", "Start", "End", "Text"])
         for u in sorted(transcript.utterances, key=lambda x: x.start):
-            ws.append([
+            writer.writerow([
                 u.speaker,
                 round(u.start / 1000, 2),
                 round(u.end / 1000, 2),
                 u.text
             ])
-        xlsx_path = filepath.replace(file_ext, ".xlsx")
-        wb.save(xlsx_path)
-        return FileResponse(xlsx_path, filename="transcript.xlsx")
+
+    return FileResponse(csv_path, filename="transcript.csv")
 
