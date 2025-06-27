@@ -9,7 +9,7 @@ import csv
 
 app = FastAPI()
 
-# CORS config
+# Allow all frontend clients (e.g. Lovable) for now
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,13 +32,13 @@ async def transcribe(
         tmp.write(await file.read())
         filepath = tmp.name
 
-    # Transcribe synchronously
+    # Transcribe synchronously with disfluencies enabled ✅
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(
         speech_model=aai.SpeechModel.best,
         speaker_labels=True,
         punctuate=True,
         format_text=True,
-        disfluencies=False,
+        disfluencies=True,  # ✅ this enables "umm", "uh", etc.
         language_code=language_code
     ))
 
@@ -56,12 +56,12 @@ async def transcribe(
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["Speaker", "Start", "End", "Text"])
-        for u in sorted(transcript.utterances, key=lambda x: x.start):
+        for utt in sorted(transcript.utterances, key=lambda x: x.start):
             writer.writerow([
-                u.speaker,
-                round(u.start / 1000, 2),
-                round(u.end / 1000, 2),
-                u.text
+                utt.speaker,
+                round(utt.start / 1000, 2),
+                round(utt.end / 1000, 2),
+                utt.text
             ])
 
     return FileResponse(csv_path, filename="transcript.csv")
